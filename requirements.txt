@@ -2,4 +2,3 @@ flask
 pyTelegramBotAPI
 Pillow
 pypdf
-requests
