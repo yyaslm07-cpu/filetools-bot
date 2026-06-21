@@ -92,10 +92,10 @@ def track_user(user_id):
 
 bot.set_my_commands([
     BotCommand("start", "بدء الاستخدام والقائمة"),
-    BotCommand("ai", "💬 اسأل الذكاء الاصطناعي"),
-    BotCommand("image", "🎨 توليد صورة بالنص"),
-    BotCommand("translate", "🌐 ترجمة نص"),
-    BotCommand("summarize", "📝 تلخيص نص"),
+    BotCommand("ai", "اسأل الذكاء الاصطناعي أي سؤال"),
+    BotCommand("image", "توليد صورة من وصف نصي"),
+    BotCommand("translate", "ترجمة نص بين العربية والإنجليزية"),
+    BotCommand("summarize", "تلخيص نص طويل"),
     BotCommand("done", "تنفيذ العملية الآن"),
     BotCommand("cancel", "إلغاء العملية الحالية")
 ])
@@ -105,13 +105,13 @@ try:
     from telebot.types import BotCommandScopeChat
     bot.set_my_commands([
         BotCommand("start", "بدء الاستخدام والقائمة"),
-        BotCommand("ai", "💬 اسأل الذكاء الاصطناعي"),
-        BotCommand("image", "🎨 توليد صورة بالنص"),
-        BotCommand("translate", "🌐 ترجمة نص"),
-        BotCommand("summarize", "📝 تلخيص نص"),
+        BotCommand("ai", "اسأل الذكاء الاصطناعي أي سؤال"),
+        BotCommand("image", "توليد صورة من وصف نصي"),
+        BotCommand("translate", "ترجمة نص بين العربية والإنجليزية"),
+        BotCommand("summarize", "تلخيص نص طويل"),
         BotCommand("done", "تنفيذ العملية الآن"),
         BotCommand("cancel", "إلغاء العملية الحالية"),
-        BotCommand("users", "👤 عدد مستخدمي البوت")
+        BotCommand("users", "عدد مستخدمي البوت")
     ], scope=BotCommandScopeChat(ADMIN_ID))
 except Exception as e:
     print(f"admin commands err: {e}")
@@ -264,7 +264,14 @@ def gemini_text(prompt, system=None):
         payload["systemInstruction"] = {"parts": [{"text": system}]}
     try:
         r = requests.post(url, json=payload, timeout=120)
-        r.raise_for_status()
+        if r.status_code != 200:
+            # نطبع تفاصيل الخطأ في الـ logs للتشخيص
+            print(f"gemini_text HTTP {r.status_code}: {r.text[:300]}")
+            if r.status_code == 429:
+                return "⚠️ تم تجاوز الحد المجاني المسموح حالياً. حاول بعد دقيقة."
+            if r.status_code in (400, 403):
+                return "⚠️ مشكلة في مفتاح Gemini. تأكد من صحة المفتاح في الإعدادات."
+            return "❌ تعذّر الحصول على رد من الذكاء الاصطناعي. حاول مرة أخرى."
         data = r.json()
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
