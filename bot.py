@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Flask
 from threading import Thread
 
@@ -29,6 +30,9 @@ import time
 import glob
 import zipfile
 import threading
+import subprocess
+import requests
+import imageio_ffmpeg
 
 # ===== الإعدادات (تُقرأ من متغيرات البيئة في Render) =====
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "ضع_توكنك_هنا")
@@ -38,12 +42,57 @@ ADMIN_ID = 1983356771
 CHANNEL_USERNAME = "@filmaxpro"
 YOUTUBE_LINK = "https://youtube.com/@mosleh_2003?si=SvJFyYLE85GRRjnZ"
 
-# حد حجم الملف على تليجرام (50MB)
+# حد حجم الملف المُرسَل (إرسال = 50MB على Bot API العادي)
 MAX_FILE_SIZE_MB = 50
+# حد تحميل الفيديو (تنزيل = 20MB على Bot API العادي — حد من تلجرام نفسه)
+MAX_VIDEO_MB = 20
 # مهلة التجميع التلقائي بعد آخر ملف (ثوانٍ)
 AUTO_DELAY = 3
 # الحد الأقصى لعدد العناصر في عملية واحدة
 MAX_ITEMS = 50
+
+# ===== مفاتيح خدمات الذكاء الاصطناعي (من متغيرات البيئة) =====
+FFMPEG     = imageio_ffmpeg.get_ffmpeg_exe()
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
+ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+
+# أصوات الدبلجة — ضع voice_id من حسابك في ElevenLabs مكان القيم
+DUB_VOICES = {
+    "VOICE_ID_1": "🎙️ صوت رجالي",
+    "VOICE_ID_2": "🎙️ صوت نسائي",
+}
+
+# ===== تتبّع المستخدمين (للأدمن) =====
+USERS_FILE = "users.json"
+
+
+def load_users():
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+
+def save_users(users):
+    try:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(users), f)
+    except Exception as e:
+        print(f"save_users err: {e}")
+
+
+known_users = load_users()
+users_lock = threading.Lock()
+
+
+def track_user(user_id):
+    """يسجّل المستخدم إن كان جديداً."""
+    with users_lock:
+        if user_id not in known_users:
+            known_users.add(user_id)
+            save_users(known_users)
+
 
 bot.set_my_commands([
     BotCommand("start", "بدء الاستخدام والقائمة"),
@@ -78,6 +127,7 @@ def subscription_markup():
 def require_sub(message):
     """يرجّع True إذا المستخدم مشترك أو الأدمن، وإلا يرسل رسالة الاشتراك ويرجّع False."""
     uid = message.chat.id
+    track_user(uid)  # نسجّل كل من يتفاعل مع البوت
     if uid == ADMIN_ID:
         return True
     if check_sub(uid):
@@ -96,6 +146,7 @@ TOOLS = {
     "compressimg": "🗜️ ضغط الصور",
     "convertimg": "🔄 تحويل صيغة الصور",
     "zip": "🗂️ ضغط ملفات (ZIP)",
+    "dub": "🎙️ دبلجة فيديو إنجليزي ← عربي",
 }
 
 
@@ -123,6 +174,8 @@ TOOL_HINTS = {
     "compressimg": "🗜️ أرسل صورة أو عدة صور، وسأضغطها لتصغير حجمها.",
     "convertimg": "🔄 أرسل صورة، وسأعرض لك الصيغ المتاحة للتحويل.",
     "zip": "🗂️ أرسل عدة ملفات (صور/مستندات)، وسأضغطها في ملف ZIP واحد.",
+    "dub": (f"🎙️ أرسل فيديو إنجليزي قصير (أقصى {MAX_VIDEO_MB}MB)، "
+            "ثم اختر صوت الدبلجة. سأستخرج الصوت وأترجمه وأدبلجه بالعربي."),
 }
 
 
@@ -165,7 +218,7 @@ class AutoTimer(threading.Thread):
         sess = sessions.get(self.chat_id)
         if sess and sess.get("timer") is self and sess.get("files"):
             # الأدوات التي تحتاج خطوة إضافية لا تُنفَّذ تلقائياً
-            if sess["tool"] not in ("splitpdf", "convertimg"):
+            if sess["tool"] not in ("splitpdf", "convertimg", "dub"):
                 process(self.chat_id)
 
 
@@ -207,6 +260,37 @@ def handle_done(message):
     process(chat_id)
 
 
+# ====================== أوامر الأدمن ======================
+@bot.message_handler(commands=['stats'])
+def handle_stats(message):
+    if message.chat.id != ADMIN_ID:
+        return  # تجاهل غير الأدمن بصمت
+    with users_lock:
+        count = len(known_users)
+    bot.reply_to(
+        message,
+        f"📊 إحصائيات البوت\n\n"
+        f"👥 عدد المستخدمين الكلي: {count}\n\n"
+        f"⚠️ ملاحظة: العدد يُحفظ في ملف قد يُعاد ضبطه عند إعادة تشغيل الخادم "
+        f"على الخطة المجانية."
+    )
+
+
+@bot.message_handler(commands=['users'])
+def handle_users(message):
+    """يعرض قائمة معرّفات المستخدمين (للأدمن فقط)."""
+    if message.chat.id != ADMIN_ID:
+        return
+    with users_lock:
+        ids = list(known_users)
+    if not ids:
+        bot.reply_to(message, "لا يوجد مستخدمون مسجّلون بعد.")
+        return
+    # نرسلها على دفعات لتجنّب حد طول الرسالة
+    text = "🆔 معرّفات المستخدمين:\n\n" + "\n".join(str(i) for i in ids[:200])
+    bot.reply_to(message, text)
+
+
 # ====================== الأزرار ======================
 @bot.callback_query_handler(func=lambda call: True)
 def on_callback(call):
@@ -246,6 +330,18 @@ def on_callback(call):
             sess["opt"] = fmt
             bot.answer_callback_query(call.id, f"الصيغة: {fmt}")
             process(chat_id)
+        else:
+            bot.answer_callback_query(call.id, "انتهت الجلسة، أعد الإرسال", show_alert=True)
+        return
+
+    # اختيار صوت الدبلجة
+    if call.data.startswith("voice|"):
+        sess = get_session(chat_id)
+        if sess and sess.get("tool") == "dub" and sess.get("files"):
+            sess["opt"] = call.data.split("|")[1]
+            bot.answer_callback_query(call.id, "بدأت الدبلجة...")
+            # نشغّلها في Thread منفصل حتى لا يتجمّد البوت لباقي المستخدمين
+            threading.Thread(target=dub_process, args=(chat_id,)).start()
         else:
             bot.answer_callback_query(call.id, "انتهت الجلسة، أعد الإرسال", show_alert=True)
         return
@@ -302,6 +398,39 @@ def fmt_markup():
         InlineKeyboardButton("WEBP", callback_data="fmt|WEBP"),
     )
     return markup
+
+
+# ====================== استقبال الفيديو (الدبلجة) ======================
+@bot.message_handler(content_types=['video'])
+def on_video(message):
+    chat_id = message.chat.id
+    if not require_sub(message):
+        return
+    sess = get_session(chat_id)
+    if not sess or sess.get("tool") != "dub":
+        bot.reply_to(message, "اختر أداة الدبلجة أولاً 👇\nاكتب /start.", reply_markup=main_menu())
+        return
+
+    if message.video.file_size and message.video.file_size > MAX_VIDEO_MB * 1024 * 1024:
+        bot.reply_to(message, f"❌ الفيديو أكبر من {MAX_VIDEO_MB}MB. جرّب مقطعاً أقصر.")
+        return
+
+    try:
+        info = bot.get_file(message.video.file_id)
+        data = bot.download_file(info.file_path)
+        path = f"vid_{chat_id}_{int(time.time())}.mp4"
+        with open(path, "wb") as f:
+            f.write(data)
+        sess["files"] = [path]
+
+        mk = InlineKeyboardMarkup(row_width=1)
+        for vid, label in DUB_VOICES.items():
+            mk.add(InlineKeyboardButton(label, callback_data=f"voice|{vid}"))
+        bot.reply_to(message, "اختر صوت الدبلجة 👇", reply_markup=mk)
+    except Exception as e:
+        print(f"video err {chat_id}: {e}")
+        bot.reply_to(message, "تعذّر استلام الفيديو، حاول مرة أخرى.\n"
+                              "ملاحظة: الحد الأقصى للتحميل عبر تلجرام هو 20MB.")
 
 
 # ====================== استقبال المستندات/الملفات ======================
@@ -380,7 +509,132 @@ def on_text(message):
     bot.reply_to(message, "اكتب /start لاختيار أداة 🧰", reply_markup=main_menu())
 
 
-# ====================== التنفيذ ======================
+# ====================== دوال الدبلجة ======================
+def extract_audio(video, audio):
+    """يستخرج الصوت من الفيديو بصيغة wav أحادي 16kHz (مناسب لـ Whisper)."""
+    subprocess.run([FFMPEG, "-y", "-i", video, "-vn",
+                    "-ar", "16000", "-ac", "1", audio],
+                   check=True, capture_output=True)
+
+
+def transcribe(audio):
+    """تفريغ نصي للصوت الإنجليزي عبر Whisper API."""
+    with open(audio, "rb") as f:
+        r = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+            files={"file": f},
+            data={"model": "whisper-1"},
+            timeout=300)
+    r.raise_for_status()
+    return r.json()["text"]
+
+
+def translate_ar(text):
+    """ترجمة النص الإنجليزي إلى عربية فصحى طبيعية."""
+    r = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization": f"Bearer {OPENAI_KEY}",
+                 "Content-Type": "application/json"},
+        json={"model": "gpt-4o-mini", "messages": [
+            {"role": "system",
+             "content": "ترجم النص التالي إلى عربية فصحى طبيعية وسلسة، دون أي إضافات أو شرح أو مقدمات."},
+            {"role": "user", "content": text}]},
+        timeout=300)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"].strip()
+
+
+def tts_arabic(text, voice_id, out):
+    """تحويل النص العربي إلى صوت عبر ElevenLabs."""
+    r = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers={"xi-api-key": ELEVEN_KEY, "Content-Type": "application/json"},
+        json={"text": text, "model_id": "eleven_multilingual_v2"},
+        timeout=300)
+    r.raise_for_status()
+    with open(out, "wb") as f:
+        f.write(r.content)
+
+
+def merge(video, audio, out):
+    """يستبدل الصوت الأصلي بالصوت العربي الجديد."""
+    subprocess.run([FFMPEG, "-y", "-i", video, "-i", audio,
+                    "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+                    "-shortest", out],
+                   check=True, capture_output=True)
+
+
+def dub_process(chat_id):
+    """مسار الدبلجة الكامل — يعمل في Thread منفصل."""
+    sess = get_session(chat_id)
+    if not sess or not sess.get("files"):
+        return
+    video = sess["files"][0]
+    voice = sess["opt"]
+    ts = int(time.time())
+    audio = f"a_{chat_id}_{ts}.wav"
+    ar = f"ar_{chat_id}_{ts}.mp3"
+    out = f"dub_{chat_id}_{ts}.mp4"
+
+    st = bot.send_message(chat_id, "⏳ استخراج الصوت...")
+    try:
+        extract_audio(video, audio)
+
+        bot.edit_message_text("📝 تفريغ نصي...", chat_id, st.message_id)
+        en = transcribe(audio)
+        if not en.strip():
+            bot.edit_message_text("تعذّر استخراج كلام من الفيديو ❌", chat_id, st.message_id)
+            return
+
+        bot.edit_message_text("🌐 ترجمة...", chat_id, st.message_id)
+        arabic = translate_ar(en)
+
+        bot.edit_message_text("🎙️ توليد الصوت العربي...", chat_id, st.message_id)
+        tts_arabic(arabic, voice, ar)
+
+        bot.edit_message_text("🎬 الدمج...", chat_id, st.message_id)
+        merge(video, ar, out)
+
+        size_mb = os.path.getsize(out) / (1024 * 1024)
+        if size_mb > MAX_FILE_SIZE_MB:
+            bot.edit_message_text(
+                f"❌ الفيديو الناتج أكبر من {MAX_FILE_SIZE_MB}MB، لا يمكن إرساله.",
+                chat_id, st.message_id)
+            return
+
+        with open(out, "rb") as f:
+            bot.send_video(chat_id, f, caption="✅ تمت الدبلجة")
+        try:
+            bot.delete_message(chat_id, st.message_id)
+        except:
+            pass
+
+    except subprocess.CalledProcessError as e:
+        print(f"dub ffmpeg err {chat_id}: {e}")
+        bot.edit_message_text("حدث خطأ أثناء معالجة الفيديو ❌", chat_id, st.message_id)
+    except requests.HTTPError as e:
+        print(f"dub api err {chat_id}: {e}")
+        bot.edit_message_text(
+            "حدث خطأ من خدمة الذكاء الاصطناعي ❌\nتأكد من صحة مفاتيح API والرصيد.",
+            chat_id, st.message_id)
+    except Exception as e:
+        print(f"dub err {chat_id}: {e}")
+        try:
+            bot.edit_message_text("حدث خطأ أثناء الدبلجة ❌", chat_id, st.message_id)
+        except:
+            pass
+    finally:
+        for p in (video, audio, ar, out):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except:
+                pass
+        reset_session(chat_id)
+
+
+# ====================== التنفيذ (الأدوات الأصلية) ======================
 def parse_pages(spec, total):
     """يحوّل '1,3,5' أو '2-6' إلى قائمة فهارس (تبدأ من صفر)."""
     result = []
@@ -474,8 +728,6 @@ def process(chat_id):
         # ---------- PDF ← صور ----------
         elif tool == "pdf2img":
             reader = PdfReader(files[0])
-            # نحوّل الصفحات إلى صور عبر إعادة الرسم باستخدام pypdf غير كافية للرسم،
-            # لذا نستخرج الصور المضمّنة إن وجدت، وإلا ننبّه المستخدم.
             count = 0
             produced = []
             for pi, page in enumerate(reader.pages):
@@ -491,7 +743,6 @@ def process(chat_id):
                     "تعذّر استخراج صور من هذا الـ PDF (قد يكون نصياً بدون صور مضمّنة).",
                     chat_id, sid)
             else:
-                # نضغطها في ZIP لإرسالها دفعة وحدة
                 out = f"pdfimages_{chat_id}_{ts}.zip"
                 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
                     for i, p in enumerate(produced, 1):
