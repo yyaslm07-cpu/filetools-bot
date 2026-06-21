@@ -84,6 +84,18 @@ bot.set_my_commands([
     BotCommand("cancel", "إلغاء العملية الحالية")
 ])
 
+# قائمة أوامر خاصة بالأدمن وحده (تظهر في اختصاراته فقط)
+try:
+    from telebot.types import BotCommandScopeChat
+    bot.set_my_commands([
+        BotCommand("start", "بدء الاستخدام والقائمة"),
+        BotCommand("done", "تنفيذ العملية الآن"),
+        BotCommand("cancel", "إلغاء العملية الحالية"),
+        BotCommand("users", "👤 عدد مستخدمي البوت")
+    ], scope=BotCommandScopeChat(ADMIN_ID))
+except Exception as e:
+    print(f"admin commands err: {e}")
+
 # جلسة كل مستخدم: chat_id -> {"tool": اسم الأداة, "files": [...], "timer": مؤقت, "opt": خيار}
 sessions = {}
 
@@ -137,9 +149,6 @@ def main_menu(chat_id=None):
     markup = InlineKeyboardMarkup(row_width=1)
     for key, label in TOOLS.items():
         markup.add(InlineKeyboardButton(label, callback_data=f"tool|{key}"))
-    # زر خاص بالأدمن فقط
-    if chat_id == ADMIN_ID:
-        markup.add(InlineKeyboardButton("👤 عدد المستخدمين", callback_data="admin_users"))
     return markup
 
 
@@ -262,33 +271,18 @@ def handle_stats(message):
 
 @bot.message_handler(commands=['users'])
 def handle_users(message):
-    """يعرض قائمة معرّفات المستخدمين (للأدمن فقط)."""
+    """يعرض عدد مستخدمي البوت (للأدمن فقط)."""
     if message.chat.id != ADMIN_ID:
-        return
+        return  # تجاهل غير الأدمن بصمت
     with users_lock:
-        ids = list(known_users)
-    if not ids:
-        bot.reply_to(message, "لا يوجد مستخدمون مسجّلون بعد.")
-        return
-    text = "🆔 معرّفات المستخدمين:\n\n" + "\n".join(str(i) for i in ids[:200])
-    bot.reply_to(message, text)
+        count = len(known_users)
+    bot.reply_to(message, f"👤 عدد مستخدمي البوت: {count}")
 
 
 # ====================== الأزرار ======================
 @bot.callback_query_handler(func=lambda call: True)
 def on_callback(call):
     chat_id = call.message.chat.id
-
-    # زر الأدمن: عرض عدد المستخدمين
-    if call.data == "admin_users":
-        if chat_id != ADMIN_ID:
-            bot.answer_callback_query(call.id, "هذا الخيار للأدمن فقط ❌", show_alert=True)
-            return
-        with users_lock:
-            count = len(known_users)
-        bot.answer_callback_query(call.id)
-        bot.send_message(chat_id, f"👤 عدد مستخدمي البوت: {count}")
-        return
 
     if call.data == "check_sub":
         if chat_id == ADMIN_ID or check_sub(chat_id):
