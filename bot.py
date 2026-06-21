@@ -30,22 +30,10 @@ import time
 import glob
 import zipfile
 import threading
-import requests
-import base64
 
 # ===== الإعدادات (تُقرأ من متغيرات البيئة في Render) =====
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "ضع_توكنك_هنا")
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# ===== مفاتيح خدمات الذكاء الاصطناعي =====
-GEMINI_KEY    = os.environ.get("GEMINI_API_KEY", "")
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
-
-# نموذج Gemini للنصوص وتحليل الصور
-GEMINI_MODEL = "gemini-2.5-flash"
-# نموذج Cloudflare لتوليد الصور (سريع ومجاني)
-CF_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
 
 ADMIN_ID = 1983356771
 CHANNEL_USERNAME = "@filmaxpro"
@@ -92,10 +80,6 @@ def track_user(user_id):
 
 bot.set_my_commands([
     BotCommand("start", "بدء الاستخدام والقائمة"),
-    BotCommand("ai", "اسأل الذكاء الاصطناعي أي سؤال"),
-    BotCommand("image", "توليد صورة من وصف نصي"),
-    BotCommand("translate", "ترجمة نص بين العربية والإنجليزية"),
-    BotCommand("summarize", "تلخيص نص طويل"),
     BotCommand("done", "تنفيذ العملية الآن"),
     BotCommand("cancel", "إلغاء العملية الحالية")
 ])
@@ -105,10 +89,6 @@ try:
     from telebot.types import BotCommandScopeChat
     bot.set_my_commands([
         BotCommand("start", "بدء الاستخدام والقائمة"),
-        BotCommand("ai", "اسأل الذكاء الاصطناعي أي سؤال"),
-        BotCommand("image", "توليد صورة من وصف نصي"),
-        BotCommand("translate", "ترجمة نص بين العربية والإنجليزية"),
-        BotCommand("summarize", "تلخيص نص طويل"),
         BotCommand("done", "تنفيذ العملية الآن"),
         BotCommand("cancel", "إلغاء العملية الحالية"),
         BotCommand("users", "عدد مستخدمي البوت")
@@ -169,20 +149,12 @@ def main_menu(chat_id=None):
     markup = InlineKeyboardMarkup(row_width=1)
     for key, label in TOOLS.items():
         markup.add(InlineKeyboardButton(label, callback_data=f"tool|{key}"))
-    # أزرار الذكاء الاصطناعي
-    markup.add(InlineKeyboardButton("💬 اسأل الذكاء الاصطناعي", callback_data="ai|ai"))
-    markup.add(InlineKeyboardButton("🎨 توليد صورة بالنص", callback_data="ai|image"))
-    markup.add(InlineKeyboardButton("🌐 ترجمة نص", callback_data="ai|translate"))
-    markup.add(InlineKeyboardButton("📝 تلخيص نص", callback_data="ai|summarize"))
     return markup
 
 
 WELCOME = (
     "🧰 أهلاً بك في بوت الأدوات\n\n"
-    "اختر ما تريد من الأزرار بالأسفل:\n"
-    "• أدوات معالجة الملفات (PDF والصور).\n"
-    "• مميزات الذكاء الاصطناعي (دردشة، صور، ترجمة، تلخيص).\n"
-    "• أو أرسل صورة مباشرة لتحليلها.\n\n"
+    "اختر الأداة التي تريدها من الأزرار بالأسفل، ثم اتبع التعليمات.\n\n"
     "• بعد إرسال ملفاتك اكتب /done للتنفيذ فوراً، "
     f"أو انتظر {AUTO_DELAY} ثوانٍ.\n"
     "• لإلغاء العملية في أي وقت اكتب /cancel."
@@ -254,88 +226,6 @@ def arm_timer(chat_id):
     t.start()
 
 
-# ====================== دوال الذكاء الاصطناعي ======================
-def gemini_text(prompt, system=None):
-    """يرسل نصاً إلى Gemini ويعيد الرد النصي."""
-    if not GEMINI_KEY:
-        return "⚠️ خدمة الذكاء الاصطناعي غير مهيأة (مفتاح Gemini ناقص)."
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}")
-    parts = [{"text": prompt}]
-    payload = {"contents": [{"parts": parts}]}
-    if system:
-        payload["systemInstruction"] = {"parts": [{"text": system}]}
-    try:
-        r = requests.post(url, json=payload, timeout=120)
-        if r.status_code != 200:
-            # نطبع تفاصيل الخطأ في الـ logs للتشخيص
-            print(f"gemini_text HTTP {r.status_code}: {r.text[:300]}")
-            if r.status_code == 429:
-                return "⚠️ تم تجاوز الحد المجاني المسموح حالياً. حاول بعد دقيقة."
-            if r.status_code in (400, 403):
-                return "⚠️ مشكلة في مفتاح Gemini. تأكد من صحة المفتاح في الإعدادات."
-            return "❌ تعذّر الحصول على رد من الذكاء الاصطناعي. حاول مرة أخرى."
-        data = r.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        print(f"gemini_text err: {e}")
-        return "❌ تعذّر الحصول على رد من الذكاء الاصطناعي. حاول مرة أخرى."
-
-
-def gemini_vision(image_bytes, prompt, mime="image/jpeg"):
-    """يحلّل صورة عبر Gemini ويعيد وصفاً نصياً."""
-    if not GEMINI_KEY:
-        return "⚠️ خدمة الذكاء الاصطناعي غير مهيأة (مفتاح Gemini ناقص)."
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}")
-    b64 = base64.b64encode(image_bytes).decode()
-    payload = {"contents": [{"parts": [
-        {"text": prompt},
-        {"inline_data": {"mime_type": mime, "data": b64}}
-    ]}]}
-    try:
-        r = requests.post(url, json=payload, timeout=120)
-        r.raise_for_status()
-        data = r.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        print(f"gemini_vision err: {e}")
-        return "❌ تعذّر تحليل الصورة. حاول مرة أخرى."
-
-
-def cf_generate_image(prompt):
-    """يولّد صورة عبر Cloudflare Workers AI. يعيد bytes الصورة أو None."""
-    if not CF_ACCOUNT_ID or not CF_API_TOKEN:
-        return None, "⚠️ خدمة توليد الصور غير مهيأة (مفاتيح Cloudflare ناقصة)."
-    url = (f"https://api.cloudflare.com/client/v4/accounts/"
-           f"{CF_ACCOUNT_ID}/ai/run/{CF_IMAGE_MODEL}")
-    headers = {"Authorization": f"Bearer {CF_API_TOKEN}",
-               "Content-Type": "application/json"}
-    try:
-        r = requests.post(url, headers=headers,
-                          json={"prompt": prompt, "num_steps": 6}, timeout=120)
-        # نموذج SDXL-lightning يعيد الصورة مباشرة كـ bytes (PNG)
-        ctype = r.headers.get("Content-Type", "")
-        if r.status_code == 200 and "image" in ctype:
-            return r.content, None
-        # بعض الاستجابات تأتي كـ JSON يحتوي على base64
-        try:
-            data = r.json()
-            if data.get("success") and data.get("result", {}).get("image"):
-                return base64.b64decode(data["result"]["image"]), None
-            err = data.get("errors", [{}])[0].get("message", "خطأ غير معروف")
-            return None, f"❌ {err}"
-        except Exception:
-            return None, "❌ تعذّر توليد الصورة (استجابة غير متوقعة)."
-    except Exception as e:
-        print(f"cf_image err: {e}")
-        return None, "❌ تعذّر الاتصال بخدمة توليد الصور. حاول مرة أخرى."
-
-
-# حالة انتظار إدخال نصي لأوامر الذكاء الاصطناعي: chat_id -> اسم الأمر
-ai_waiting = {}
-
-
 # ====================== الأوامر ======================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
@@ -347,7 +237,6 @@ def handle_start(message):
 
 @bot.message_handler(commands=['cancel'])
 def handle_cancel(message):
-    ai_waiting.pop(message.chat.id, None)
     reset_session(message.chat.id)
     bot.reply_to(message, "تم الإلغاء ✅\nاكتب /start لاختيار أداة جديدة.")
 
@@ -364,136 +253,21 @@ def handle_done(message):
     process(chat_id)
 
 
-# ====================== أوامر الذكاء الاصطناعي ======================
-@bot.message_handler(commands=['ai'])
-def handle_ai(message):
-    if not require_sub(message):
-        return
-    chat_id = message.chat.id
-    reset_session(chat_id)  # نخرج من أي أداة نشطة
-    arg = message.text.partition(" ")[2].strip()
-    if arg:
-        _run_ai_task(chat_id, "ai", arg)
-    else:
-        ai_waiting[chat_id] = "ai"
-        bot.reply_to(message, "💬 اكتب سؤالك وسأجيبك:")
-
-
-@bot.message_handler(commands=['translate'])
-def handle_translate(message):
-    if not require_sub(message):
-        return
-    chat_id = message.chat.id
-    reset_session(chat_id)
-    arg = message.text.partition(" ")[2].strip()
-    if arg:
-        _run_ai_task(chat_id, "translate", arg)
-    else:
-        ai_waiting[chat_id] = "translate"
-        bot.reply_to(message, "🌐 أرسل النص الذي تريد ترجمته:")
-
-
-@bot.message_handler(commands=['summarize'])
-def handle_summarize(message):
-    if not require_sub(message):
-        return
-    chat_id = message.chat.id
-    reset_session(chat_id)
-    arg = message.text.partition(" ")[2].strip()
-    if arg:
-        _run_ai_task(chat_id, "summarize", arg)
-    else:
-        ai_waiting[chat_id] = "summarize"
-        bot.reply_to(message, "📝 أرسل النص الطويل الذي تريد تلخيصه:")
-
-
-@bot.message_handler(commands=['image'])
-def handle_image(message):
-    if not require_sub(message):
-        return
-    chat_id = message.chat.id
-    reset_session(chat_id)
-    arg = message.text.partition(" ")[2].strip()
-    if arg:
-        _run_image_task(chat_id, arg)
-    else:
-        ai_waiting[chat_id] = "image"
-        bot.reply_to(message, "🎨 صف الصورة التي تريد توليدها (بالإنجليزية أفضل):")
-
-
-def _run_ai_task(chat_id, task, text):
-    """ينفّذ مهمة نصية (دردشة/ترجمة/تلخيص) في خيط منفصل."""
-    def worker():
-        st = bot.send_message(chat_id, "⏳ جاري المعالجة...")
-        try:
-            if task == "ai":
-                result = gemini_text(text)
-            elif task == "translate":
-                result = gemini_text(
-                    text,
-                    system="ترجم النص التالي. إن كان عربياً ترجمه للإنجليزية، "
-                           "وإن كان بأي لغة أخرى ترجمه للعربية. أعطِ الترجمة فقط دون شرح.")
-            elif task == "summarize":
-                result = gemini_text(
-                    text,
-                    system="لخّص النص التالي بالعربية في نقاط واضحة ومختصرة.")
-            else:
-                result = "أمر غير معروف."
-            # تلجرام يحدّ الرسالة بـ 4096 حرفاً
-            bot.edit_message_text(result[:4000], chat_id, st.message_id)
-        except Exception as e:
-            print(f"ai task err {chat_id}: {e}")
-            try:
-                bot.edit_message_text("❌ حدث خطأ، حاول مرة أخرى.", chat_id, st.message_id)
-            except:
-                pass
-    threading.Thread(target=worker).start()
-
-
-def _run_image_task(chat_id, prompt):
-    """يولّد صورة في خيط منفصل."""
-    def worker():
-        st = bot.send_message(chat_id, "🎨 جاري توليد الصورة...")
-        try:
-            img, err = cf_generate_image(prompt)
-            if err:
-                bot.edit_message_text(err, chat_id, st.message_id)
-                return
-            bot.send_photo(chat_id, img, caption="✅ تم توليد الصورة")
-            try:
-                bot.delete_message(chat_id, st.message_id)
-            except:
-                pass
-        except Exception as e:
-            print(f"image task err {chat_id}: {e}")
-            try:
-                bot.edit_message_text("❌ تعذّر توليد الصورة.", chat_id, st.message_id)
-            except:
-                pass
-    threading.Thread(target=worker).start()
-
-
 # ====================== أوامر الأدمن ======================
-@bot.message_handler(commands=['stats'])
-def handle_stats(message):
-    if message.chat.id != ADMIN_ID:
-        return  # تجاهل غير الأدمن بصمت
-    with users_lock:
-        count = len(known_users)
-    bot.reply_to(
-        message,
-        f"📊 إحصائيات البوت\n\n"
-        f"👥 عدد المستخدمين الكلي: {count}\n\n"
-        f"⚠️ ملاحظة: العدد يُحفظ في ملف قد يُعاد ضبطه عند إعادة تشغيل الخادم "
-        f"على الخطة المجانية."
-    )
-
-
 @bot.message_handler(commands=['users'])
 def handle_users(message):
     """يعرض عدد مستخدمي البوت (للأدمن فقط)."""
     if message.chat.id != ADMIN_ID:
         return  # تجاهل غير الأدمن بصمت
+    with users_lock:
+        count = len(known_users)
+    bot.reply_to(message, f"👤 عدد مستخدمي البوت: {count}")
+
+
+@bot.message_handler(commands=['stats'])
+def handle_stats(message):
+    if message.chat.id != ADMIN_ID:
+        return
     with users_lock:
         count = len(known_users)
     bot.reply_to(message, f"👤 عدد مستخدمي البوت: {count}")
@@ -514,21 +288,6 @@ def on_callback(call):
                 bot.send_message(chat_id, WELCOME, reply_markup=main_menu(chat_id))
         else:
             bot.answer_callback_query(call.id, "لم تشترك بعد ❌", show_alert=True)
-        return
-
-    # أزرار الذكاء الاصطناعي
-    if call.data.startswith("ai|"):
-        task = call.data.split("|")[1]
-        reset_session(chat_id)
-        ai_waiting[chat_id] = task
-        bot.answer_callback_query(call.id)
-        prompts = {
-            "ai": "💬 اكتب سؤالك وسأجيبك:",
-            "image": "🎨 صف الصورة التي تريد توليدها (بالإنجليزية أفضل):",
-            "translate": "🌐 أرسل النص الذي تريد ترجمته:",
-            "summarize": "📝 أرسل النص الطويل الذي تريد تلخيصه:",
-        }
-        bot.send_message(chat_id, prompts.get(task, "أرسل النص:"))
         return
 
     if call.data.startswith("tool|"):
@@ -568,8 +327,7 @@ def on_photo(message):
         return
     sess = get_session(chat_id)
     if not sess:
-        # لا توجد أداة نشطة → نحلّل الصورة بالذكاء الاصطناعي (Gemini)
-        _analyze_photo(message)
+        bot.reply_to(message, "اختر أداة أولاً 👇\nاكتب /start.", reply_markup=main_menu(chat_id))
         return
 
     tool = sess["tool"]
@@ -610,28 +368,6 @@ def fmt_markup():
         InlineKeyboardButton("WEBP", callback_data="fmt|WEBP"),
     )
     return markup
-
-
-def _analyze_photo(message):
-    """يحلّل صورة مرسلة (بدون أداة) عبر Gemini Vision في خيط منفصل."""
-    chat_id = message.chat.id
-    caption = (message.caption or "").strip()
-    prompt = caption if caption else "صف هذه الصورة بالتفصيل بالعربية."
-
-    def worker():
-        st = bot.send_message(chat_id, "🔍 جاري تحليل الصورة...")
-        try:
-            info = bot.get_file(message.photo[-1].file_id)
-            data = bot.download_file(info.file_path)
-            result = gemini_vision(data, prompt)
-            bot.edit_message_text(result[:4000], chat_id, st.message_id)
-        except Exception as e:
-            print(f"analyze photo err {chat_id}: {e}")
-            try:
-                bot.edit_message_text("❌ تعذّر تحليل الصورة.", chat_id, st.message_id)
-            except:
-                pass
-    threading.Thread(target=worker).start()
 
 
 # ====================== استقبال المستندات/الملفات ======================
@@ -700,15 +436,6 @@ def on_text(message):
     chat_id = message.chat.id
     text = message.text.strip()
     sess = get_session(chat_id)
-
-    # حالة انتظار إدخال لأمر ذكاء اصطناعي
-    if chat_id in ai_waiting:
-        task = ai_waiting.pop(chat_id)
-        if task == "image":
-            _run_image_task(chat_id, text)
-        else:
-            _run_ai_task(chat_id, task, text)
-        return
 
     # حالة انتظار أرقام صفحات لتقسيم PDF
     if sess and sess.get("tool") == "splitpdf" and sess.get("opt") == "await_pages":
