@@ -133,10 +133,13 @@ TOOLS = {
 }
 
 
-def main_menu():
+def main_menu(chat_id=None):
     markup = InlineKeyboardMarkup(row_width=1)
     for key, label in TOOLS.items():
         markup.add(InlineKeyboardButton(label, callback_data=f"tool|{key}"))
+    # زر خاص بالأدمن فقط
+    if chat_id == ADMIN_ID:
+        markup.add(InlineKeyboardButton("👤 عدد المستخدمين", callback_data="admin_users"))
     return markup
 
 
@@ -220,7 +223,7 @@ def handle_start(message):
     if not require_sub(message):
         return
     reset_session(message.chat.id)
-    bot.reply_to(message, WELCOME, reply_markup=main_menu())
+    bot.reply_to(message, WELCOME, reply_markup=main_menu(message.chat.id))
 
 
 @bot.message_handler(commands=['cancel'])
@@ -276,14 +279,25 @@ def handle_users(message):
 def on_callback(call):
     chat_id = call.message.chat.id
 
+    # زر الأدمن: عرض عدد المستخدمين
+    if call.data == "admin_users":
+        if chat_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "هذا الخيار للأدمن فقط ❌", show_alert=True)
+            return
+        with users_lock:
+            count = len(known_users)
+        bot.answer_callback_query(call.id)
+        bot.send_message(chat_id, f"👤 عدد مستخدمي البوت: {count}")
+        return
+
     if call.data == "check_sub":
         if chat_id == ADMIN_ID or check_sub(chat_id):
             bot.answer_callback_query(call.id, "تم التحقق ✅")
             try:
                 bot.edit_message_text(WELCOME, chat_id, call.message.message_id,
-                                      reply_markup=main_menu())
+                                      reply_markup=main_menu(chat_id))
             except:
-                bot.send_message(chat_id, WELCOME, reply_markup=main_menu())
+                bot.send_message(chat_id, WELCOME, reply_markup=main_menu(chat_id))
         else:
             bot.answer_callback_query(call.id, "لم تشترك بعد ❌", show_alert=True)
         return
@@ -325,7 +339,7 @@ def on_photo(message):
         return
     sess = get_session(chat_id)
     if not sess:
-        bot.reply_to(message, "اختر أداة أولاً 👇\nاكتب /start.", reply_markup=main_menu())
+        bot.reply_to(message, "اختر أداة أولاً 👇\nاكتب /start.", reply_markup=main_menu(chat_id))
         return
 
     tool = sess["tool"]
@@ -376,7 +390,7 @@ def on_document(message):
         return
     sess = get_session(chat_id)
     if not sess:
-        bot.reply_to(message, "اختر أداة أولاً 👇\nاكتب /start.", reply_markup=main_menu())
+        bot.reply_to(message, "اختر أداة أولاً 👇\nاكتب /start.", reply_markup=main_menu(chat_id))
         return
 
     tool = sess["tool"]
@@ -441,7 +455,7 @@ def on_text(message):
         process(chat_id)
         return
 
-    bot.reply_to(message, "اكتب /start لاختيار أداة 🧰", reply_markup=main_menu())
+    bot.reply_to(message, "اكتب /start لاختيار أداة 🧰", reply_markup=main_menu(chat_id))
 
 
 # ====================== التنفيذ ======================
