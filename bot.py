@@ -169,17 +169,20 @@ def main_menu(chat_id=None):
     markup = InlineKeyboardMarkup(row_width=1)
     for key, label in TOOLS.items():
         markup.add(InlineKeyboardButton(label, callback_data=f"tool|{key}"))
+    # أزرار الذكاء الاصطناعي
+    markup.add(InlineKeyboardButton("💬 اسأل الذكاء الاصطناعي", callback_data="ai|ai"))
+    markup.add(InlineKeyboardButton("🎨 توليد صورة بالنص", callback_data="ai|image"))
+    markup.add(InlineKeyboardButton("🌐 ترجمة نص", callback_data="ai|translate"))
+    markup.add(InlineKeyboardButton("📝 تلخيص نص", callback_data="ai|summarize"))
     return markup
 
 
 WELCOME = (
     "🧰 أهلاً بك في بوت الأدوات\n\n"
-    "اختر أداة من الأزرار بالأسفل لمعالجة الملفات، أو استخدم مميزات الذكاء الاصطناعي:\n\n"
-    "💬 /ai — اسأل الذكاء الاصطناعي\n"
-    "🎨 /image — توليد صورة بالنص\n"
-    "🌐 /translate — ترجمة نص\n"
-    "📝 /summarize — تلخيص نص\n"
-    "🔍 أرسل صورة مباشرة (بدون أداة) لتحليلها\n\n"
+    "اختر ما تريد من الأزرار بالأسفل:\n"
+    "• أدوات معالجة الملفات (PDF والصور).\n"
+    "• مميزات الذكاء الاصطناعي (دردشة، صور، ترجمة، تلخيص).\n"
+    "• أو أرسل صورة مباشرة لتحليلها.\n\n"
     "• بعد إرسال ملفاتك اكتب /done للتنفيذ فوراً، "
     f"أو انتظر {AUTO_DELAY} ثوانٍ.\n"
     "• لإلغاء العملية في أي وقت اكتب /cancel."
@@ -511,6 +514,21 @@ def on_callback(call):
                 bot.send_message(chat_id, WELCOME, reply_markup=main_menu(chat_id))
         else:
             bot.answer_callback_query(call.id, "لم تشترك بعد ❌", show_alert=True)
+        return
+
+    # أزرار الذكاء الاصطناعي
+    if call.data.startswith("ai|"):
+        task = call.data.split("|")[1]
+        reset_session(chat_id)
+        ai_waiting[chat_id] = task
+        bot.answer_callback_query(call.id)
+        prompts = {
+            "ai": "💬 اكتب سؤالك وسأجيبك:",
+            "image": "🎨 صف الصورة التي تريد توليدها (بالإنجليزية أفضل):",
+            "translate": "🌐 أرسل النص الذي تريد ترجمته:",
+            "summarize": "📝 أرسل النص الطويل الذي تريد تلخيصه:",
+        }
+        bot.send_message(chat_id, prompts.get(task, "أرسل النص:"))
         return
 
     if call.data.startswith("tool|"):
