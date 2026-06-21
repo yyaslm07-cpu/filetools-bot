@@ -2,5 +2,3 @@ flask
 pyTelegramBotAPI
 Pillow
 pypdf
-requests
-imageio-ffmpeg
